@@ -1,3 +1,4 @@
+from hashlib import sha256
 from io import BytesIO
 import json
 from zipfile import ZipFile
@@ -6,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from app.api import dependencies
+from app.application.share_preview import preview_share_package
 from app.db.base import Base
 from app.db.models import AppSettingModel
 from app.db.session import build_engine
@@ -47,6 +49,33 @@ def test_export_preview_and_download_share_a_stable_library_id(tmp_path, monkeyp
         bad_type = client.post("/api/share/export", json={"entry_ids": [True]})
         assert bad_type.status_code == 422
         assert bad_type.json()["code"] == "VALIDATION_ERROR"
+
+        sample = tmp_path / "sample.my-format"
+        sample.write_bytes(b"custom format bytes")
+        attached = client.post(
+            f"/api/entries/{entry.json()['id']}/resources",
+            json={"path": str(sample)},
+        )
+        assert attached.status_code == 201
+        assert attached.json()["extension"] == ".my-format"
+        assert attached.json()["file_name"] == "sample.my-format"
+
+        hyphenated = {"entry_ids": [entry.json()["id"]]}
+        preview = client.post("/api/share/export/preview", json=hyphenated)
+        assert preview.status_code == 200, preview.text
+        listed = preview.json()["entries"][0]["resources"][0]
+        fingerprint = sha256(sample.read_bytes()).hexdigest()
+        assert listed["file_name"] == "sample.my-format"
+        assert listed["extension"] == ""
+        assert listed["sha256"] == fingerprint
+        assert str(sample) not in preview.text
+
+        download = client.post("/api/share/export", json=hyphenated)
+        assert download.status_code == 200, download.text
+        read_back = preview_share_package(download.content).manifest["entries"][0]["resources"][0]
+        assert read_back["file_name"] == "sample.my-format"
+        assert read_back["extension"] == ""
+        assert read_back["sha256"] == fingerprint
     finally:
         client.close()
         engine.dispose()
