@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from app.application.share_export import ShareExportError, export_share_package
+from app.application.share_export import ShareExportError, export_share_package, share_extension
 from app.db.base import Base
 from app.db.models import EntryModel, EntryTagModel, ResourceModel, TagCategoryModel, TagModel
 from app.db.share_export_repository import ShareExportRepository
@@ -124,6 +124,37 @@ def test_invalid_app_version_fails_schema_validation(sample):
     session, first, *_ = sample
     with pytest.raises(ShareExportError, match="不符合格式规范"):
         export_share_package(ShareExportRepository(session), [first.id], str(uuid4()), "")
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        (".txt", ".txt"),
+        (".TXT", ".txt"),
+        ("mp3", ".mp3"),
+        (".tar.gz", ".tar.gz"),
+        ("", ""),
+        (None, ""),
+        (".my-format", ""),
+        (".c++", ""),
+        ("." + "a" * 32, ""),
+    ],
+)
+def test_share_extension_follows_v1_pattern(stored, expected):
+    assert share_extension(stored) == expected
+
+
+def test_hyphenated_extension_exports_without_dropping_name_or_fingerprint(sample):
+    session, first, _, resource, file = sample
+    resource.extension = ".my-format"
+    resource.file_name = "sample.my-format"
+    session.commit()
+    entry = unpack(export_share_package(ShareExportRepository(session), [first.id], str(uuid4())))["entries"][0]
+    packed = entry["resources"][0]
+    assert packed["file_name"] == "sample.my-format"
+    assert packed["extension"] == ""
+    assert packed["sha256"] == hashlib.sha256(file.read_bytes()).hexdigest()
+    assert str(file) not in json.dumps(entry)
 
 
 def test_each_export_generates_fresh_package_and_tag_refs(sample):
