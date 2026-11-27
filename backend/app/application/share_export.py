@@ -5,6 +5,7 @@ from hashlib import sha256
 from io import BytesIO
 import json
 import os
+import re
 import stat
 from uuid import UUID, uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -17,6 +18,9 @@ from app.domain.share_package_schema import SHARE_PACKAGE_V1_SCHEMA
 
 MAX_MANIFEST_BYTES = 10 * 1024 * 1024
 VALIDATOR = Draft202012Validator(SHARE_PACKAGE_V1_SCHEMA, format_checker=FormatChecker())
+# v1：空字符串，或若干「. + 小写字母数字」片段，最长 32。
+_V1_EXTENSION = re.compile(r"^(?:(?:\.[a-z0-9]+)+)?$")
+_V1_EXTENSION_MAX = 32
 
 
 class ShareExportError(CodedApplicationError, ValueError):
@@ -31,6 +35,20 @@ def _utc(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def share_extension(value: str | None) -> str:
+    """把本地后缀收成 v1 允许的扩展名。
+
+    字母数字后缀统一为小写。连字符、下划线等无法表示的后缀写成空字符串，
+    不拒绝整个条目；调用方仍保留原始文件名和指纹。
+    """
+    text = (value or "").strip().lower()
+    if text and not text.startswith("."):
+        text = f".{text}"
+    if len(text) <= _V1_EXTENSION_MAX and _V1_EXTENSION.fullmatch(text):
+        return text
+    return ""
 
 
 def fingerprint_file(path: str) -> tuple[int, int, str]:
@@ -62,7 +80,7 @@ def _resource_snapshot(resource: ExportResource) -> dict:
         raise ShareExportError("无法读取资源文件") from exc
     return {
         "share_id": resource.share_id, "file_name": name,
-        "extension": resource.extension, "size_bytes": size,
+        "extension": share_extension(resource.extension), "size_bytes": size,
         "sha256": fingerprint, "availability_at_export": availability,
     }
 
